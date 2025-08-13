@@ -1,0 +1,105 @@
+## Auto downloading of PDFs using urls
+##jacquomo.monk@utas.edu.au
+
+## Load necessary packages
+library(tidyverse)
+library(httr)
+library(openxlsx)
+library(rvest)
+
+
+## Read the xlsx file (replace with your path)
+setwd("C:\\Users\\jmonk1\\OneDrive - University of Tasmania\\Project_MAC_5.6\\02_Data_inventory\\Reports")
+
+## load excel sheet with urls and titles to publications (edit sheet name)
+df <- read.xlsx("Copy of Scientific Publications 20220401-20230331-archive-links (002).xlsx", sheet = 1)%>%
+glimpse()
+
+
+## Do some cleaning to get a list of publications you wan to download
+# Assumes the column is named exactly "Link to PDF"- edit as needed
+# Filter out rows where the link is NA
+pdf_data  <- df %>%
+  dplyr::filter(!is.na(`Link.to.PDF`)) %>%
+  dplyr::select(Title, `Link.to.PDF`) %>%
+  dplyr::distinct()
+
+
+## Create a folder to store downloads (change as needed)
+dir.create("downloaded_pdfs", showWarnings = FALSE)
+
+## Function to sanitize filenames
+sanitize_filename <- function(title) {
+  # Replace illegal filename characters with underscores
+  title %>%
+    str_replace_all("[,/:*?\"<>()|\\\\]", "_") %>%
+    str_replace_all("\\s+", "_") %>%
+    str_sub(1, 200) # Limit length to 200 characters
+}
+
+
+## Create an empty dataframe to store errors
+error_log <- tibble(
+  title = character(),
+  url = character(),
+  error_type = character(),
+  status_code = integer(),
+  error_message = character()
+)
+
+
+## Loop through each page, extract the PDF link and download
+for (i in seq_len(nrow(pdf_data))) {
+  url <- pdf_data$`Link.to.PDF`[i] # change if Link to PDF is not your column name
+  title <- pdf_data$Title[i]
+  safe_title <- sanitize_filename(title)
+  file_path <- paste0("downloaded_pdfs/", safe_title, ".pdf") #edit path if you have changed it above
+  
+  if (str_detect(url, "doi.org")) {
+    message("🔶 Skipping DOI link: ", title)
+    error_log <- bind_rows(error_log, tibble(
+      title = title,
+      url = url,
+      error_type = "Skipped DOI",
+      status_code = NA,
+      error_message = "DOI link skipped"
+    ))
+    next
+  }
+  
+  # Try direct download
+  tryCatch({
+    res <- GET(url,
+               write_disk(file_path, overwrite = TRUE),
+               timeout(60),
+               user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"))
+    
+    if (res$status_code != 200) {
+      message("❌ Failed (status ", res$status_code, "): ", title)
+      error_log <- bind_rows(error_log, tibble(
+        title = title,
+        url = url,
+        error_type = "HTTP Error",
+        status_code = res$status_code,
+        error_message = paste0("Status code: ", res$status_code)
+      ))
+    } else {
+      message("✅ Downloaded: ", file_path)
+    }
+  }, error = function(e) {
+    message("❌ Error for: ", title)
+    error_log <- bind_rows(error_log, tibble(
+      title = title,
+      url = url,
+      error_type = "R Error",
+      status_code = NA,
+      error_message = e$message
+    ))
+  })
+}
+
+## Write errors to CSV if any exist
+if (nrow(error_log) > 0) {
+  write_csv(error_log, "downloaded_pdfs/download_errors.csv") #edit path if changed 
+}
+
